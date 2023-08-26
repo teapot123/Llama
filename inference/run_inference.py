@@ -26,10 +26,12 @@ def main(
     num_generations_per_prompt: int=5,
     dataset: str='gsm8k',
     data_split: str='train',
+    max_batch_size: int=6,
     peft_model: str=None,
-    quantization: bool=False,
+    quantization: bool=True,
     max_new_tokens =100, #The maximum numbers of tokens to generate
     prompt_file: str=None,
+    output_file: str=None,
     seed: int=42, #seed value for reproducibility
     do_sample: bool=True, #Whether or not to use sampling ; use greedy decoding otherwise.
     min_length: int=None, #The minimum length of the sequence to be generated, input prompt + min_new_tokens
@@ -94,30 +96,69 @@ def main(
         }
     )
     model.resize_token_embeddings(model.config.vocab_size + 1) 
-        
-    batch = tokenizer(user_prompt, padding='max_length', truncation=True, max_length=max_padding_length, return_tensors="pt")
+    
+    # input_data = input_data[0:10]
+    batch = [input_data[i:i+max_batch_size] for i in range(0, len(input_data), max_batch_size)]
+    batches = [tokenizer(x, padding='max_length', truncation=True, max_length=max_padding_length, return_tensors="pt") for x in batch]
+    
+    print(len(batches))
+    
+    if output_file != None: 
+        with open(output_file, 'w') as fout:
+            for i, batch in enumerate(batches):
+                batch = {k: v.to("cuda") for k, v in batch.items()}
+                start = time.perf_counter()
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **batch,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=do_sample,
+                        top_p=top_p,
+                        temperature=temperature,
+                        min_length=min_length,
+                        use_cache=use_cache,
+                        top_k=top_k,
+                        repetition_penalty=repetition_penalty,
+                        length_penalty=length_penalty,
+                        **kwargs 
+                    )
+                e2e_inference_time = (time.perf_counter()-start)*1000
+                print(f"the inference time is {e2e_inference_time} ms")
+                
+                for j, output in enumerate(outputs):
+                    ind = int((i * max_batch_size + j) / num_generations_per_prompt)
+                    question = input_question[ind]['question'] 
+                    output_text = tokenizer.decode(output, skip_special_tokens=True)
+                    generated_answer = output_text.split(question)[-1].strip().split('\n')[0].split('Q:')[0].split('A:')[-1].strip()
+                    # print(f"Question:\n{question}")
+                    # print(f"Model output:\n{output_text}")
+                    # print(f"generated_answer:\n{generated_answer}")
+                    # print('-----------')
+                    fout.write(question + '\t' + generated_answer + '\n')
+            
+    else:
+        for batch in batches:
+            batch = {k: v.to("cuda") for k, v in batch.items()}
+            start = time.perf_counter()
+            with torch.no_grad():
+                outputs = model.generate(
+                    **batch,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=do_sample,
+                    top_p=top_p,
+                    temperature=temperature,
+                    min_length=min_length,
+                    use_cache=use_cache,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    length_penalty=length_penalty,
+                    **kwargs 
+                )
+            e2e_inference_time = (time.perf_counter()-start)*1000
+            print(f"the inference time is {e2e_inference_time} ms")
+            output_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    batch = {k: v.to("cuda") for k, v in batch.items()}
-    start = time.perf_counter()
-    with torch.no_grad():
-        outputs = model.generate(
-            **batch,
-            max_new_tokens=max_new_tokens,
-            do_sample=do_sample,
-            top_p=top_p,
-            temperature=temperature,
-            min_length=min_length,
-            use_cache=use_cache,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            length_penalty=length_penalty,
-            **kwargs 
-        )
-    e2e_inference_time = (time.perf_counter()-start)*1000
-    print(f"the inference time is {e2e_inference_time} ms")
-    output_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    print(f"Model output:\n{output_text}")
+            print(f"Model output:\n{output_text}")
    
 
 if __name__ == "__main__":
